@@ -1,10 +1,13 @@
 import { expect } from "chai";
 import { viem } from "hardhat";
-
+import { parseEther, formatEther } from "viem";
 import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
 
 const RATIO = 10n;
 const PRICE = 5n;
+const TEST_BUY_TOKENS = parseEther("1");
+const MINTER_ROLE =
+  "0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6";
 
 async function deployContract() {
   const publicClient = await viem.getPublicClient();
@@ -17,7 +20,22 @@ async function deployContract() {
     paymentTokenContract.address,
     nftTokenContract.address,
   ]);
-  return { publicClient, deployer, otherAccount, tokenSaleContract };
+  const assignMinterRoleToPaymentTokenTx =
+    await paymentTokenContract.write.grantRole([
+      MINTER_ROLE,
+      tokenSaleContract.address,
+    ]);
+  await publicClient.waitForTransactionReceipt({
+    hash: assignMinterRoleToPaymentTokenTx,
+  });
+  return {
+    publicClient,
+    deployer,
+    otherAccount,
+    tokenSaleContract,
+    paymentTokenContract,
+    nftTokenContract,
+  };
 }
 
 describe("NFT Shop", async () => {
@@ -34,7 +52,7 @@ describe("NFT Shop", async () => {
     });
     it("uses a valid ERC20 as payment token", async () => {
       const { tokenSaleContract } = await loadFixture(deployContract);
-      const tokenContractAddress = await tokenSaleContract.read.tokenAddress();
+      const tokenContractAddress = await tokenSaleContract.read.tokenContract();
       const tokenContract = await viem.getContractAt(
         "MyToken",
         tokenContractAddress
@@ -44,7 +62,7 @@ describe("NFT Shop", async () => {
     });
     it("uses a valid ERC721 as NFT collection", async () => {
       const { tokenSaleContract, deployer } = await loadFixture(deployContract);
-      const tokenContractAddress = await tokenSaleContract.read.nftAddress();
+      const tokenContractAddress = await tokenSaleContract.read.nftContract();
       const tokenContract = await viem.getContractAt(
         "MyNFT",
         tokenContractAddress
@@ -57,10 +75,51 @@ describe("NFT Shop", async () => {
   });
   describe("When a user buys an ERC20 from the Token contract", async () => {
     it("charges the correct amount of ETH", async () => {
-      throw new Error("Not implemented");
+      const {
+        tokenSaleContract,
+        paymentTokenContract,
+        otherAccount,
+        publicClient,
+      } = await loadFixture(deployContract);
+      const ethBeforeBuyTx = await publicClient.getBalance({
+        address: otherAccount.account.address,
+      });
+      const tx = await tokenSaleContract.write.buyTokens({
+        value: TEST_BUY_TOKENS,
+        account: otherAccount.account,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: tx,
+      });
+      const gasAmount = receipt.cumulativeGasUsed;
+      const gasPrice = receipt.effectiveGasPrice;
+      const gasCosts = gasAmount * gasPrice;
+      const ethAfterBuyTx = await publicClient.getBalance({
+        address: otherAccount.account.address,
+      });
+      const diff = ethBeforeBuyTx - ethAfterBuyTx - gasCosts;
+      expect(diff).to.equal(TEST_BUY_TOKENS);
     });
     it("gives the correct amount of tokens", async () => {
-      throw new Error("Not implemented");
+      const {
+        tokenSaleContract,
+        paymentTokenContract,
+        otherAccount,
+        publicClient,
+      } = await loadFixture(deployContract);
+      const balanceBeforeBuyTx = await paymentTokenContract.read.balanceOf([
+        otherAccount.account.address,
+      ]);
+      const tx = await tokenSaleContract.write.buyTokens({
+        value: TEST_BUY_TOKENS,
+        account: otherAccount.account,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: tx });
+      const balanceAfterBuyTx = await paymentTokenContract.read.balanceOf([
+        otherAccount.account.address,
+      ]);
+      const diff = balanceAfterBuyTx - balanceBeforeBuyTx;
+      expect(diff).to.equal(TEST_BUY_TOKENS * RATIO);
     });
   });
   describe("When a user burns an ERC20 at the Shop contract", async () => {
